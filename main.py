@@ -1,168 +1,175 @@
+import csv
 import re
 import time
+
+from selenium import webdriver
 from selenium.webdriver.common.by import By
+from selenium.webdriver.firefox.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium import webdriver
-from selenium.webdriver.remote.webelement import WebElement
+
+from find_utils import safe_find_attribute, safe_find_list_text, safe_find_text
 
 TARGET_URL = "https://www.ouedkniss.com/automobiles_vehicules/"
 
 
 def setup_driver():
-    driver = webdriver.Firefox()
+    options = Options()
+    options.add_argument("--headless")
+    options.set_preference("dom.webdriver.enabled", False)
+    options.set_preference("useAutomationExtension", False)
+    driver = webdriver.Firefox(options=options)
     return driver
 
 
-def horizontal_scroll(driver: webdriver.Firefox):
-    print("Initiating auto horizontal scroll.....")
-    WebDriverWait(driver, 10).until(
-        EC.presence_of_element_located(
-            (By.CSS_SELECTOR, ".search-top-announcements .swiper")
-        )
-    )
-
-    is_swipe = True
-    print("Swiping top horizontal announces....")
-    while is_swipe:
-        is_swipe = driver.execute_script(
-            "return document.querySelector('.search-top-announcements .swiper').swiper.slideNext()"
-        )
-    time.sleep(1)
-    print("Horizontal scroll finished...")
+def scroll_page(driver: webdriver.Firefox, pixels_to_scroll: int):
+    driver.execute_script(f"window.scrollBy(0, {pixels_to_scroll})")
 
 
-SCROLL_STEPS = 5
-
-
-def auto_scroll(driver: webdriver.Firefox):
+def scrap_visible_data(driver: webdriver.Firefox, existed_ids=set()):
     """
-    Scroll multiple times to the end of the page to make sure it loaded completly
+    Scrap only currently visible data
     """
-    print("Initiating auto scroll.....")
+    data = []
+    visible_ids = set()
 
-    print("[1] - Confirming page height.....")
-    current_height = 0
-    while current_height != driver.execute_script("return document.body.scrollHeight"):
-        current_height = driver.execute_script("return document.body.scrollHeight")
-        print(f"Current height is >>> {current_height}")
-        driver.execute_script("window.scrollTo(0, document.body.scrollHeight)")
-        time.sleep(1)
+    try:
+        listings = WebDriverWait(driver, 10).until(
+            EC.presence_of_all_elements_located(
+                (
+                    By.CSS_SELECTOR,
+                    "div[class*='v-col-sm-6 v-col-md-4 v-col-lg-3 v-col-12']",
+                ),
+            )
+        )
+    except Exception:
+        listings = []
 
-    total_height = driver.execute_script("return document.body.scrollHeight")
-    print(f"Page height is >>> {total_height}")
-    time.sleep(0.2)
+    for listing in listings:
+        try:
+            title = safe_find_text(listing, "h3[class*='announ-card-title']")
+            if title == "Not Found":
+                continue
 
-    print("[2]- Time to automate your lazy scroll you mfs !!!!")
-    step_size = total_height / SCROLL_STEPS
-    for step in range(SCROLL_STEPS + 1):
-        if step == 0:
+            id = safe_find_attribute(
+                listing, ".v-col-sm-6.v-col-md-4.v-col-lg-3.v-col-12 > div", "id"
+            )
+            if id in visible_ids or id in existed_ids:
+                continue
+            visible_ids.add(id)
+
+            city = safe_find_text(listing, "span[class*='city']")
+            price = safe_find_text(listing, "span.price", None)
+            link = safe_find_attribute(listing, "a[class*='link']", "href")
+            specifications = safe_find_list_text(listing, "span[class*='v-chip']", None)
+
+            if price is not None:
+                price = re.sub("\n", " ", price)
+
+            listing_data = {
+                "id": id,
+                "title": title,
+                "price": price,
+                "specifications": specifications,
+                "city": city,
+                "link": link,
+            }
+            data.append(listing_data)
+            print(list(listing_data.values()))
+        except Exception as e:
+            print(f"Something happened when scraping listing: {e}")
             continue
+    return data, visible_ids
 
-        if step == SCROLL_STEPS:
-            scroll_to = total_height
+
+def scroll_and_scrap(driver: webdriver.Firefox):
+    """
+    Scroll and catch them data on the go, leaving nothing behind
+    """
+    all_data = []
+    all_ids = set()
+    scroll_pause = 2
+    scroll_pixels = 1000
+
+    print("Starting the scroll & scrap ........")
+    driver.execute_script("window.scrollTo(0,0)")
+    time.sleep(1)
+
+    # Getting the initial data
+    initial_data, initial_ids = scrap_visible_data(driver)
+    print(f"Initial load: {len(initial_data)}")
+
+    iter = 0
+    no_change_counter = 0
+    max_no_change = 3
+    while True:
+        current_height = driver.execute_script("return document.body.scrollHeight")
+
+        print(f"Scroll iteration attempt {iter + 1}...")
+        scroll_page(driver, scroll_pixels)
+        time.sleep(scroll_pause)
+        new_data, new_ids = scrap_visible_data(driver, all_ids)
+        true_data = [data for data in new_data if data.get("id") not in all_ids]
+
+        if true_data:
+            all_data.extend(true_data)
+            new_ids_set = {item["id"] for item in true_data}
+            all_ids.update(new_ids_set)
+            no_change_counter = 0
+
+            print(
+                f"New data added! {len(true_data)} listing. (Total is {len(all_data)})"
+            )
         else:
-            scroll_to = step_size * step
+            print("No new listings found !")
+            no_change_counter += 1
 
-        print(f"[{step}] >> Scrolling ....")
-        driver.execute_script(f"window.scrollTo(0, {scroll_to})")
-        time.sleep(2.5)
-    print("[/] Auto scroll finished ....")
+        new_height = driver.execute_script("return document.body.scrollHeight")
+
+        if new_height == current_height:
+            print(f"Page height has not changed. Counter: {no_change_counter}")
+            no_change_counter += 1
+        else:
+            no_change_counter = 0
+
+        if no_change_counter >= max_no_change:
+            print("Reached bottom of page (height stopped changing for 3 attempts).")
+            break
+        iter += 1
+
+    return all_data
 
 
-def scrap_car_prices():
+def scrap_page():
     driver = setup_driver()
+    data = []
 
     try:
         driver.get(url=TARGET_URL)
-        print(" >>> Waiting for page to load ....")
 
-        WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "body"))
-        )
-        horizontal_scroll(driver)
-
-        auto_scroll(driver)
-        print(" >>> Waiting for all listings to be queryable...")
-
-        try:
-            listings = WebDriverWait(driver, 10).until(
-                EC.presence_of_all_elements_located(
-                    (
-                        By.CSS_SELECTOR,
-                        "[class*='v-col-sm-6 v-col-md-4 v-col-lg-3 v-col-12']",
-                    ),
-                )
-            )
-        except Exception as e:
-            print(f"[x] Could not find listings after scrolling: {e}")
-            listings = []  # Continue with an empty list
-        potential_listings: list[WebElement] = []
-
-        for listing in listings:
-            text = listing.text.strip()
-            if text and len(text) > 20:
-                potential_listings.append(listing)
-
-        print(f"Found {len(potential_listings)} potential listings after scrolling")
-
-        for i, listing in enumerate(potential_listings[:10]):
-            title = "No title"
-            price = "No price"
-            specification = ["No specifications"]
-            city = "No city"
-
-            try:
-                id_div = listing.find_element(
-                    By.CSS_SELECTOR, ".v-col-sm-6.v-col-md-4.v-col-lg-3.v-col-12 > div"
-                )
-                id = id_div.get_attribute("id")
-
-                link_div = listing.find_element(By.CSS_SELECTOR, "a[class*='link']")
-                link = link_div.get_attribute("href")
-
-                title_element = listing.find_element(
-                    By.CSS_SELECTOR, "h3[class*='o-announ-card-title']"
-                )
-                title = title_element.text.strip()
-
-                price_element = listing.find_element(By.CSS_SELECTOR, "span.price")
-                price = price_element.text.strip()
-                price = re.sub("\n", " ", price)
-
-                city_element = listing.find_element(
-                    By.CSS_SELECTOR, "span[class*='city']"
-                )
-                city = city_element.text.strip()
-
-                chips_elements = listing.find_elements(
-                    By.CSS_SELECTOR, "span[class*='v-chip']"
-                )
-                for chip in chips_elements:
-                    specification.append(chip.text.strip())
-                specification.pop(0)
-
-            except Exception:
-                print(f"Something bad happened to lsiting nbr {i}!")
-                pass
-            finally:
-                print("=" * 7 + f"Listing -{i}-" + "=" * 7)
-                print(f"Identifier: {id}")
-                print(f"Title: {title}")
-                print(f"Price: {price}")
-                print(f"Specifications: {specification}")
-                print(f"City: {city}")
-                print(f"Link: {link}")
+        # SCRAP, SCROLL AND LET THE BALL GROW
+        data = scroll_and_scrap(driver)
 
     except Exception as e:
         print(f"[x] Error waiting for elements: {e}")
         with open("debug_page.html", "w", encoding="utf-8") as file:
             file.write(driver.page_source)
         print("Debug file saved as 'debug_page.html'")
+
     finally:
-        print("Exiting *********")
+        if data:
+            with open("cars_file.csv", "w", newline="", encoding="utf-8") as csvfile:
+                fields = list(data[0].keys())
+                writer = csv.DictWriter(csvfile, fieldnames=fields)
+                writer.writeheader()
+                writer.writerows(data)
+                print(f"Successfully saved {len(data)} listings to cars_file.csv")
+        else:
+            print("No data was scraped")
+
+        print("********* Exiting *********")
         driver.quit()
 
 
 if __name__ == "__main__":
-    scrap_car_prices()
+    scrap_page()
