@@ -1,5 +1,6 @@
 import csv
 import re
+import sys
 import time
 
 from selenium import webdriver
@@ -8,9 +9,15 @@ from selenium.webdriver.firefox.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-from find_utils import safe_find_attribute, safe_find_list_text, safe_find_text
+from utils import (
+    get_existing_ids,
+    safe_find_attribute,
+    safe_find_list_text,
+    safe_find_text,
+)
 
 TARGET_URL = "https://www.ouedkniss.com/automobiles_vehicules/"
+FILE_NAME = "cars_file.csv"
 
 
 def setup_driver():
@@ -88,16 +95,18 @@ def scroll_and_scrap(driver: webdriver.Firefox):
     """
     all_data = []
     all_ids = set()
-    scroll_pause = 2
+    scroll_pause = 1
     scroll_pixels = 1000
+
+    all_ids.update(get_existing_ids(f"./{FILE_NAME}"))
 
     print("Starting the scroll & scrap ........")
     driver.execute_script("window.scrollTo(0,0)")
     time.sleep(1)
 
     # Getting the initial data
-    initial_data, initial_ids = scrap_visible_data(driver)
-    print(f"Initial load: {len(initial_data)}")
+    initial_data, initial_ids = scrap_visible_data(driver, all_ids)
+    print(f"Initial load: {len(initial_ids) + len(all_ids)}")
 
     iter = 0
     no_change_counter = 0
@@ -115,14 +124,12 @@ def scroll_and_scrap(driver: webdriver.Firefox):
             all_data.extend(true_data)
             new_ids_set = {item["id"] for item in true_data}
             all_ids.update(new_ids_set)
-            no_change_counter = 0
 
             print(
                 f"New data added! {len(true_data)} listing. (Total is {len(all_data)})"
             )
         else:
             print("No new listings found !")
-            no_change_counter += 1
 
         new_height = driver.execute_script("return document.body.scrollHeight")
 
@@ -144,31 +151,37 @@ def scrap_page():
     driver = setup_driver()
     data = []
 
-    try:
-        driver.get(url=TARGET_URL)
+    for i in range(1, 10):
+        print(
+            f"\n================================ Scraping page {i} ================================"
+        )
+        try:
+            driver.get(url=TARGET_URL + str(i))
 
-        # SCRAP, SCROLL AND LET THE BALL GROW
-        data = scroll_and_scrap(driver)
+            # SCRAP, SCROLL AND LET THE BALL GROW
+            data.extend(scroll_and_scrap(driver))
 
-    except Exception as e:
-        print(f"[x] Error waiting for elements: {e}")
-        with open("debug_page.html", "w", encoding="utf-8") as file:
-            file.write(driver.page_source)
-        print("Debug file saved as 'debug_page.html'")
+        except Exception as e:
+            print(f"[x] Error waiting for elements: {e}")
+            with open("debug_page.html", "w", encoding="utf-8") as file:
+                file.write(driver.page_source)
+            print("Debug file saved as 'debug_page.html'")
+            driver.quit()
+            sys.exit(1)
 
-    finally:
-        if data:
-            with open("cars_file.csv", "w", newline="", encoding="utf-8") as csvfile:
-                fields = list(data[0].keys())
-                writer = csv.DictWriter(csvfile, fieldnames=fields)
+    if data:
+        with open(FILE_NAME, "a", newline="", encoding="utf-8") as csvfile:
+            fields = list(data[0].keys())
+            writer = csv.DictWriter(csvfile, fieldnames=fields)
+            if not get_existing_ids(FILE_NAME):
                 writer.writeheader()
-                writer.writerows(data)
-                print(f"Successfully saved {len(data)} listings to cars_file.csv")
-        else:
-            print("No data was scraped")
+            writer.writerows(data)
+            print(f"Successfully saved {len(data)} listings to {FILE_NAME}")
+    else:
+        print("No data was scraped")
 
-        print("********* Exiting *********")
-        driver.quit()
+    print("********* Exiting *********")
+    driver.quit()
 
 
 if __name__ == "__main__":

@@ -1,3 +1,4 @@
+import csv
 from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webelement import WebElement
 
@@ -24,3 +25,16 @@ def safe_find_list_text(element: WebElement, selector, default=["No specificatio
         return [elm.text.strip() for elm in found_elements]
     except Exception:
         return default
+
+
+def get_existing_ids(file_path):
+    existing_ids = set()
+    try:
+        with open(file_path, "r", newline="", encoding="utf-8") as csvfile:
+            reader = csv.DictReader(csvfile)
+            for row in reader:
+                if "id" in row:
+                    existing_ids.add(row["id"])
+    except FileNotFoundError:
+        pass  # File doesn't exist yet, so no IDs to load
+    return existing_ids
